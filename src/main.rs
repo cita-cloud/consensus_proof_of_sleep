@@ -14,7 +14,7 @@
 
 use clap::Clap;
 use git_version::git_version;
-use log::{debug, info};
+use log::{debug, info, warn};
 
 const GIT_VERSION: &str = git_version!(
     args = ["--tags", "--always", "--dirty=-modified"],
@@ -75,7 +75,7 @@ fn main() {
 }
 
 use cita_ng_proto::config::{
-    config_service_client::ConfigServiceClient, Endpoint, RegisterEndpointInfo,
+    config_service_client::ConfigServiceClient, Endpoint, RegisterEndpointInfo, ServiceId,
 };
 
 async fn register_endpoint(
@@ -99,6 +99,47 @@ async fn register_endpoint(
     Ok(response.into_inner().is_success)
 }
 
+async fn get_endpoint(id: u64, config_port: String) -> Result<String, Box<dyn std::error::Error>> {
+    let config_addr = format!("http://127.0.0.1:{}", config_port);
+    let mut client = ConfigServiceClient::connect(config_addr).await?;
+
+    let request = Request::new(ServiceId { id });
+
+    let response = client.get_endpoint(request).await?;
+
+    Ok(response.into_inner().port)
+}
+
+use cita_ng_proto::network::network_service_client::NetworkServiceClient;
+use cita_ng_proto::network::RegisterInfo;
+
+async fn register_network_msg_handler(
+    config_port: String,
+    port: String,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let config_addr = format!("http://127.0.0.1:{}", config_port);
+    let mut client = ConfigServiceClient::connect(config_addr).await?;
+
+    // id of Network service is 0
+    let request = Request::new(ServiceId { id: 0 });
+
+    let response = client.get_endpoint(request).await?;
+
+    let network_grpc_port = response.into_inner().port;
+    let network_addr = format!("http://127.0.0.1:{}", network_grpc_port);
+    let mut client = NetworkServiceClient::connect(network_addr).await?;
+
+    let request = Request::new(RegisterInfo {
+        module_name: "consensus".to_owned(),
+        hostname: "127.0.0.1".to_owned(),
+        port,
+    });
+
+    let response = client.register_network_msg_handler(request).await?;
+
+    Ok(response.into_inner().is_success)
+}
+
 use cita_ng_proto::common::{Empty, SimpleResponse};
 use cita_ng_proto::consensus::{
     consensus_service_server::ConsensusService, consensus_service_server::ConsensusServiceServer,
@@ -107,9 +148,9 @@ use cita_ng_proto::consensus::{
 use tonic::{transport::Server, Request, Response, Status};
 
 mod pos;
-use parking_lot::RwLock;
 use pos::POS;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 // grpc server of consensus
 pub struct PosServer {
@@ -130,7 +171,8 @@ impl ConsensusService for PosServer {
     ) -> Result<Response<BlockDelayNumber>, Status> {
         debug!("get_block_delay_number request: {:?}", request);
 
-        let block_delay_number = self.pos.read().get_block_delay_number();
+        let pos = self.pos.read().await;
+        let block_delay_number = pos.get_block_delay_number();
         let reply = BlockDelayNumber { block_delay_number };
         Ok(Response::new(reply))
     }
@@ -141,7 +183,8 @@ impl ConsensusService for PosServer {
         debug!("reconfigure request: {:?}", request);
 
         let config = request.into_inner();
-        self.pos.write().reconfigure(config);
+        let mut pos = self.pos.write().await;
+        pos.reconfigure(config);
 
         let reply = SimpleResponse { is_success: true };
         Ok(Response::new(reply))
@@ -152,6 +195,9 @@ use cita_ng_proto::network::{
     network_msg_handler_service_server::NetworkMsgHandlerService,
     network_msg_handler_service_server::NetworkMsgHandlerServiceServer, NetworkMsg,
 };
+use std::time::Duration;
+use tokio::time;
+
 // grpc server of network msg handler
 pub struct PosNetworkMsgHandlerServer {
     pos: Arc<RwLock<POS>>,
@@ -171,23 +217,113 @@ impl NetworkMsgHandlerService for PosNetworkMsgHandlerServer {
     ) -> Result<Response<SimpleResponse>, Status> {
         debug!("process_network_msg request: {:?}", request);
 
-        let reply = SimpleResponse { is_success: true };
-        Ok(Response::new(reply))
+        let msg = request.into_inner();
+        if msg.module != "consensus" {
+            Err(Status::invalid_argument("wrong module"))
+        } else {
+            {
+                let pos = self.pos.read().await;
+                pos.process_network_msg(msg).await;
+            }
+
+            let reply = SimpleResponse { is_success: true };
+            Ok(Response::new(reply))
+        }
     }
 }
 
 #[tokio::main]
 async fn run(opts: RunOpts) -> Result<(), Box<dyn std::error::Error>> {
+    let config_port_clone = opts.config_port.clone();
+    let grpc_port_clone = opts.grpc_port.clone();
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(3));
+        loop {
+            // register endpoint
+            {
+                let ret =
+                    register_endpoint(config_port_clone.clone(), grpc_port_clone.clone()).await;
+                if ret.is_ok() && ret.unwrap() {
+                    info!("register endpoint success!");
+                    break;
+                }
+            }
+            warn!("register endpoint failed! Retrying");
+            interval.tick().await;
+        }
+    });
+
+    let config_port_clone = opts.config_port.clone();
+    let grpc_port_clone = opts.grpc_port.clone();
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(3));
+        loop {
+            // register endpoint
+            {
+                let ret = register_network_msg_handler(
+                    config_port_clone.clone(),
+                    grpc_port_clone.clone(),
+                )
+                .await;
+                if ret.is_ok() && ret.unwrap() {
+                    info!("register network msg handler success!");
+                    break;
+                }
+            }
+            warn!("register network msg handler failed! Retrying");
+            interval.tick().await;
+        }
+    });
+
+    let controller_port;
+    let config_port_clone = opts.config_port.clone();
+    let mut interval = time::interval(Duration::from_secs(3));
+    loop {
+        {
+            // id of Controller service is 4
+            let ret = get_endpoint(4, config_port_clone.clone()).await;
+            if let Ok(port) = ret {
+                info!("get controller endpoint success!");
+                controller_port = port;
+                break;
+            }
+        }
+        warn!("get controller endpoint failed! Retrying");
+        interval.tick().await;
+    }
+    info!("controller port: {}", controller_port);
+
+    let network_port;
+    let config_port_clone = opts.config_port.clone();
+    let mut interval = time::interval(Duration::from_secs(3));
+    loop {
+        {
+            // id of Network service is 0
+            let ret = get_endpoint(0, config_port_clone.clone()).await;
+            if let Ok(port) = ret {
+                info!("get network endpoint success!");
+                network_port = port;
+                break;
+            }
+        }
+        warn!("get network endpoint failed! Retrying");
+        interval.tick().await;
+    }
+    info!("network port: {}", network_port);
+
     let addr_str = format!("127.0.0.1:{}", opts.grpc_port);
     let addr = addr_str.parse()?;
 
-    let pos = Arc::new(RwLock::new(POS::new()));
+    let pos = Arc::new(RwLock::new(POS::new(controller_port, network_port)));
+
+    let pos_clone = pos.clone();
+    tokio::spawn(async move {
+        let pos = pos_clone.read().await;
+        pos.miner().await;
+    });
 
     let pos_server = PosServer::new(pos.clone());
     let pos_network_msg_handler = PosNetworkMsgHandlerServer::new(pos);
-
-    // register endpoint
-    register_endpoint(opts.config_port, opts.grpc_port).await?;
 
     Server::builder()
         .add_service(ConsensusServiceServer::new(pos_server))
