@@ -169,7 +169,7 @@ impl ConsensusService for PosServer {
         &self,
         request: Request<Empty>,
     ) -> Result<Response<BlockDelayNumber>, Status> {
-        debug!("get_block_delay_number request: {:?}", request);
+        info!("get_block_delay_number request: {:?}", request);
 
         let pos = self.pos.read().await;
         let block_delay_number = pos.get_block_delay_number();
@@ -180,7 +180,7 @@ impl ConsensusService for PosServer {
         &self,
         request: Request<ConsensusConfiguration>,
     ) -> Result<Response<SimpleResponse>, Status> {
-        debug!("reconfigure request: {:?}", request);
+        info!("reconfigure request: {:?}", request);
 
         let config = request.into_inner();
         let mut pos = self.pos.write().await;
@@ -215,7 +215,7 @@ impl NetworkMsgHandlerService for PosNetworkMsgHandlerServer {
         &self,
         request: Request<NetworkMsg>,
     ) -> Result<Response<SimpleResponse>, Status> {
-        debug!("process_network_msg request: {:?}", request);
+        info!("process_network_msg request: {:?}", request);
 
         let msg = request.into_inner();
         if msg.module != "consensus" {
@@ -318,13 +318,20 @@ async fn run(opts: RunOpts) -> Result<(), Box<dyn std::error::Error>> {
 
     let pos_clone = pos.clone();
     tokio::spawn(async move {
-        let pos = pos_clone.read().await;
-        pos.miner().await;
+        let mut interval = time::interval(Duration::new(0, 500000000));
+        loop {
+            interval.tick().await;
+            {
+                let pos = pos_clone.read().await;
+                pos.mining().await;
+            }
+        }
     });
 
     let pos_server = PosServer::new(pos.clone());
     let pos_network_msg_handler = PosNetworkMsgHandlerServer::new(pos);
 
+    info!("start grpc server!");
     Server::builder()
         .add_service(ConsensusServiceServer::new(pos_server))
         .add_service(NetworkMsgHandlerServiceServer::new(pos_network_msg_handler))

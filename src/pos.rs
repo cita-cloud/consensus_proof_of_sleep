@@ -17,6 +17,7 @@ use cita_ng_proto::common::{Empty, Hash};
 use cita_ng_proto::consensus::ConsensusConfiguration;
 use cita_ng_proto::controller::consensus2_controller_service_client::Consensus2ControllerServiceClient;
 use cita_ng_proto::network::{network_service_client::NetworkServiceClient, NetworkMsg};
+use log::{info, warn};
 use rand::{thread_rng, Rng};
 use std::time::Duration;
 use tokio::time;
@@ -54,7 +55,9 @@ impl POS {
                     let mut nonce_bytes = [0 as u8; 8];
                     nonce_bytes.copy_from_slice(nonce_slice);
                     let nonce = u64::from_be_bytes(nonce_bytes);
+                    info!("nonce {}, proposal {:?}", nonce, proposal);
                     if self.check_nonce(target, proposal, nonce) {
+                        info!("check_nonce ok!");
                         let check_ret = {
                             let ret =
                                 check_proposal(self.controller_port.clone(), proposal.to_vec())
@@ -67,6 +70,7 @@ impl POS {
                         };
 
                         if check_ret {
+                            info!("check proposal ok! commit this block!");
                             let _ =
                                 commit_block(self.controller_port.clone(), proposal.to_vec()).await;
                         }
@@ -98,24 +102,28 @@ impl POS {
         false
     }
 
-    pub async fn miner(&self) {
-        let mut interval = time::interval(Duration::from_secs(2));
-        loop {
-            interval.tick().await;
-            if let Some(node_num) = self.config.as_ref().map(|c| c.validators.len()) {
-                let proposal = {
-                    let ret = get_proposal(self.controller_port.clone()).await;
-                    if ret.is_err() {
-                        continue;
-                    }
-                    ret.unwrap()
-                };
-                let target = node_num * 3; // 3 is block interval
-                let nonce: u64 = thread_rng().gen();
-                let mined = self.check_nonce(target, &proposal, nonce);
-                if mined {
-                    let _ = broadcast_proposal(self.network_port.clone(), proposal, nonce).await;
+    pub async fn mining(&self) {
+        info!("start mining...");
+        if let Some(node_num) = self.config.as_ref().map(|c| c.validators.len()) {
+            let proposal = {
+                let ret = get_proposal(self.controller_port.clone()).await;
+                if ret.is_err() {
+                    warn!("get proposal failed");
+                    return;
                 }
+                ret.unwrap()
+            };
+            let target = node_num * 3; // 3 is block interval
+            let nonce: u64 = thread_rng().gen();
+            let mined = self.check_nonce(target, &proposal, nonce);
+            if mined {
+                info!("mined one block, we are so lucky!");
+                {
+                    let _ = commit_block(self.controller_port.clone(), proposal.to_vec()).await;
+                }
+                let _ = broadcast_proposal(self.network_port.clone(), proposal, nonce).await;
+            } else {
+                info!("we are not lucky! Try again!");
             }
         }
     }
@@ -125,7 +133,7 @@ async fn check_proposal(
     controller_port: String,
     proposal: Vec<u8>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let controller_address = format!("127.0.0.1:{}", controller_port);
+    let controller_address = format!("http://127.0.0.1:{}", controller_port);
     let mut controller_client =
         Consensus2ControllerServiceClient::connect(controller_address).await?;
 
@@ -140,7 +148,7 @@ async fn commit_block(
     controller_port: String,
     proposal: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let controller_address = format!("127.0.0.1:{}", controller_port);
+    let controller_address = format!("http://127.0.0.1:{}", controller_port);
     let mut controller_client =
         Consensus2ControllerServiceClient::connect(controller_address).await?;
 
@@ -152,7 +160,7 @@ async fn commit_block(
 }
 
 async fn get_proposal(controller_port: String) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let controller_address = format!("127.0.0.1:{}", controller_port);
+    let controller_address = format!("http://127.0.0.1:{}", controller_port);
     let mut controller_client =
         Consensus2ControllerServiceClient::connect(controller_address).await?;
 
@@ -168,7 +176,7 @@ async fn broadcast_proposal(
     proposal: Vec<u8>,
     nonce: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let network_address = format!("127.0.0.1:{}", network_port);
+    let network_address = format!("http://127.0.0.1:{}", network_port);
     let mut network_client = NetworkServiceClient::connect(network_address).await?;
 
     let nonce_bytes = nonce.to_be_bytes();
