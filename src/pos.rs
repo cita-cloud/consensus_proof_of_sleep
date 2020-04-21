@@ -19,12 +19,11 @@ use cita_ng_proto::controller::consensus2_controller_service_client::Consensus2C
 use cita_ng_proto::network::{network_service_client::NetworkServiceClient, NetworkMsg};
 use log::{info, warn};
 use rand::{thread_rng, Rng};
-use std::time::Duration;
-use tokio::time;
 use tonic::Request;
 
 pub struct POS {
     config: Option<ConsensusConfiguration>,
+    target: u32,
     controller_port: String,
     network_port: String,
 }
@@ -33,6 +32,7 @@ impl POS {
     pub fn new(controller_port: String, network_port: String) -> Self {
         POS {
             config: None,
+            target: 2,
             controller_port,
             network_port,
         }
@@ -43,20 +43,22 @@ impl POS {
     }
 
     pub fn reconfigure(&mut self, config: ConsensusConfiguration) {
+        let mining_power = config.validators.len() as u32 * config.block_interval;
+        self.target = 32 - u32::leading_zeros(mining_power);
         self.config = Some(config);
+
     }
 
     pub async fn process_network_msg(&self, msg: NetworkMsg) {
         match msg.r#type.as_str() {
             "proposal" => {
-                if let Some(node_num) = self.config.as_ref().map(|c| c.validators.len()) {
-                    let target = node_num * 3; // 3 is block interval
+                if self.config.is_some() {
                     let (nonce_slice, proposal) = msg.msg.split_at(8);
                     let mut nonce_bytes = [0 as u8; 8];
                     nonce_bytes.copy_from_slice(nonce_slice);
                     let nonce = u64::from_be_bytes(nonce_bytes);
                     info!("nonce {}, proposal {:?}", nonce, proposal);
-                    if self.check_nonce(target, proposal, nonce) {
+                    if self.check_nonce(proposal, nonce) {
                         info!("check_nonce ok!");
                         let check_ret = {
                             let ret =
@@ -82,12 +84,12 @@ impl POS {
         }
     }
 
-    pub fn check_nonce(&self, target: usize, proposal: &[u8], nonce: u64) -> bool {
+    pub fn check_nonce(&self, proposal: &[u8], nonce: u64) -> bool {
         let nonce_bytes = nonce.to_be_bytes();
         let mut bytes = nonce_bytes[0..].to_vec();
         bytes.extend(proposal);
         let hash = blake2b(&bytes);
-        let mut target = target;
+        let mut target = self.target;
         for v in hash.as_bytes() {
             if *v == 0 {
                 if target <= 8 {
@@ -95,7 +97,7 @@ impl POS {
                 }
                 target -= 8;
             } else {
-                let lz = u8::leading_zeros(*v) as usize;
+                let lz = u8::leading_zeros(*v);
                 return lz > target;
             }
         }
@@ -104,7 +106,7 @@ impl POS {
 
     pub async fn mining(&self) {
         info!("start mining...");
-        if let Some(node_num) = self.config.as_ref().map(|c| c.validators.len()) {
+        if self.config.is_some() {
             let proposal = {
                 let ret = get_proposal(self.controller_port.clone()).await;
                 if ret.is_err() {
@@ -113,9 +115,8 @@ impl POS {
                 }
                 ret.unwrap()
             };
-            let target = node_num * 3; // 3 is block interval
             let nonce: u64 = thread_rng().gen();
-            let mined = self.check_nonce(target, &proposal, nonce);
+            let mined = self.check_nonce(&proposal, nonce);
             if mined {
                 info!("mined one block, we are so lucky!");
                 {
