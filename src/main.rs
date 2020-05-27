@@ -63,7 +63,7 @@ fn main() {
         }
         SubCommand::Run(opts) => {
             // init log4rs
-            log4rs::init_file("pos-log4rs.yaml", Default::default()).unwrap();
+            log4rs::init_file("consensus-log4rs.yaml", Default::default()).unwrap();
             info!("grpc port of this service: {}", opts.grpc_port);
             let _ = run(opts);
         }
