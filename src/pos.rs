@@ -24,12 +24,12 @@ use tonic::Request;
 pub struct POS {
     config: Option<ConsensusConfiguration>,
     target: u32,
-    controller_port: String,
-    network_port: String,
+    controller_port: u16,
+    network_port: u16,
 }
 
 impl POS {
-    pub fn new(controller_port: String, network_port: String) -> Self {
+    pub fn new(controller_port: u16, network_port: u16) -> Self {
         POS {
             config: None,
             target: 2,
@@ -38,15 +38,10 @@ impl POS {
         }
     }
 
-    pub fn get_block_delay_number(&self) -> u32 {
-        6
-    }
-
     pub fn reconfigure(&mut self, config: ConsensusConfiguration) {
         let mining_power = config.validators.len() as u32 * config.block_interval;
         self.target = 32 - u32::leading_zeros(mining_power);
         self.config = Some(config);
-
     }
 
     pub async fn process_network_msg(&self, msg: NetworkMsg) {
@@ -61,9 +56,7 @@ impl POS {
                     if self.check_nonce(proposal, nonce) {
                         info!("check_nonce ok!");
                         let check_ret = {
-                            let ret =
-                                check_proposal(self.controller_port.clone(), proposal.to_vec())
-                                    .await;
+                            let ret = check_proposal(self.controller_port, proposal.to_vec()).await;
                             if let Ok(result) = ret {
                                 result
                             } else {
@@ -73,8 +66,7 @@ impl POS {
 
                         if check_ret {
                             info!("check proposal ok! commit this block!");
-                            let _ =
-                                commit_block(self.controller_port.clone(), proposal.to_vec()).await;
+                            let _ = commit_block(self.controller_port, proposal.to_vec()).await;
                         }
                     }
                 }
@@ -108,7 +100,7 @@ impl POS {
         info!("start mining...");
         if self.config.is_some() {
             let proposal = {
-                let ret = get_proposal(self.controller_port.clone()).await;
+                let ret = get_proposal(self.controller_port).await;
                 if ret.is_err() {
                     warn!("get proposal failed");
                     return;
@@ -120,9 +112,9 @@ impl POS {
             if mined {
                 info!("mined one block, we are so lucky!");
                 {
-                    let _ = commit_block(self.controller_port.clone(), proposal.to_vec()).await;
+                    let _ = commit_block(self.controller_port, proposal.to_vec()).await;
                 }
-                let _ = broadcast_proposal(self.network_port.clone(), proposal, nonce).await;
+                let _ = broadcast_proposal(self.network_port, proposal, nonce).await;
             } else {
                 info!("we are not lucky! Try again!");
             }
@@ -131,7 +123,7 @@ impl POS {
 }
 
 async fn check_proposal(
-    controller_port: String,
+    controller_port: u16,
     proposal: Vec<u8>,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let controller_address = format!("http://127.0.0.1:{}", controller_port);
@@ -146,7 +138,7 @@ async fn check_proposal(
 }
 
 async fn commit_block(
-    controller_port: String,
+    controller_port: u16,
     proposal: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let controller_address = format!("http://127.0.0.1:{}", controller_port);
@@ -160,7 +152,7 @@ async fn commit_block(
     Ok(())
 }
 
-async fn get_proposal(controller_port: String) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+async fn get_proposal(controller_port: u16) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let controller_address = format!("http://127.0.0.1:{}", controller_port);
     let mut controller_client =
         Consensus2ControllerServiceClient::connect(controller_address).await?;
@@ -173,7 +165,7 @@ async fn get_proposal(controller_port: String) -> Result<Vec<u8>, Box<dyn std::e
 }
 
 async fn broadcast_proposal(
-    network_port: String,
+    network_port: u16,
     proposal: Vec<u8>,
     nonce: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
