@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use blake2b_simd::blake2b;
-use cita_ng_proto::common::{Empty, Hash};
-use cita_ng_proto::consensus::ConsensusConfiguration;
-use cita_ng_proto::controller::consensus2_controller_service_client::Consensus2ControllerServiceClient;
-use cita_ng_proto::network::{network_service_client::NetworkServiceClient, NetworkMsg};
+use cita_cloud_proto::common::{Empty, Hash};
+use cita_cloud_proto::consensus::ConsensusConfiguration;
+use cita_cloud_proto::controller::consensus2_controller_service_client::Consensus2ControllerServiceClient;
+use cita_cloud_proto::network::{network_service_client::NetworkServiceClient, NetworkMsg};
 use log::{info, warn};
 use rand::{thread_rng, Rng};
 use tonic::Request;

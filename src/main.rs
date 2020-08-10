@@ -20,7 +20,7 @@ const GIT_VERSION: &str = git_version!(
     args = ["--tags", "--always", "--dirty=-modified"],
     fallback = "unknown"
 );
-const GIT_HOMEPAGE: &str = "https://github.com/rink1969/cita_ng_pos";
+const GIT_HOMEPAGE: &str = "https://github.com/cita-cloud/consensus_proof_of_sleep";
 
 /// This doc string acts as a help message when the user runs '--help'
 /// as do all doc strings on fields
@@ -45,7 +45,7 @@ enum SubCommand {
 #[derive(Clap)]
 struct RunOpts {
     /// Sets grpc port of this service.
-    #[clap(short = "p", long = "port", default_value = "50003")]
+    #[clap(short = 'p', long = "port", default_value = "50003")]
     grpc_port: String,
 }
 
@@ -70,8 +70,8 @@ fn main() {
     }
 }
 
-use cita_ng_proto::network::network_service_client::NetworkServiceClient;
-use cita_ng_proto::network::RegisterInfo;
+use cita_cloud_proto::network::network_service_client::NetworkServiceClient;
+use cita_cloud_proto::network::RegisterInfo;
 
 async fn register_network_msg_handler(
     network_port: u16,
@@ -91,8 +91,8 @@ async fn register_network_msg_handler(
     Ok(response.into_inner().is_success)
 }
 
-use cita_ng_proto::common::SimpleResponse;
-use cita_ng_proto::consensus::{
+use cita_cloud_proto::common::SimpleResponse;
+use cita_cloud_proto::consensus::{
     consensus_service_server::ConsensusService, consensus_service_server::ConsensusServiceServer,
     ConsensusConfiguration,
 };
@@ -133,7 +133,7 @@ impl ConsensusService for PosServer {
     }
 }
 
-use cita_ng_proto::network::{
+use cita_cloud_proto::network::{
     network_msg_handler_service_server::NetworkMsgHandlerService,
     network_msg_handler_service_server::NetworkMsgHandlerServiceServer, NetworkMsg,
 };
