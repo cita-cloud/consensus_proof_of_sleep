@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use blake2b_simd::blake2b;
-use cita_cloud_proto::common::{Empty, Hash};
+use cita_cloud_proto::common::{Empty, Hash, ProposalWithProof};
 use cita_cloud_proto::consensus::ConsensusConfiguration;
 use cita_cloud_proto::controller::consensus2_controller_service_client::Consensus2ControllerServiceClient;
 use cita_cloud_proto::network::{network_service_client::NetworkServiceClient, NetworkMsg};
@@ -44,6 +44,16 @@ impl POS {
         self.config = Some(config);
     }
 
+    pub fn check_block(&self, proposal: Vec<u8>, proof: Vec<u8>) -> bool {
+        if proof.len() != 8 {
+            return false;
+        }
+        let mut bytes: [u8; 8] = [0; 8];
+        bytes[..8].clone_from_slice(&proof[..8]);
+        let nonce = u64::from_be_bytes(bytes);
+        self.check_nonce(&proposal, nonce)
+    }
+
     pub async fn process_network_msg(&self, msg: NetworkMsg) {
         match msg.r#type.as_str() {
             "proposal" => {
@@ -66,7 +76,12 @@ impl POS {
 
                         if check_ret {
                             info!("check proposal ok! commit this block!");
-                            let _ = commit_block(self.controller_port, proposal.to_vec()).await;
+                            let _ = commit_block(
+                                self.controller_port,
+                                proposal.to_vec(),
+                                nonce_bytes.to_vec(),
+                            )
+                            .await;
                         }
                     }
                 }
@@ -112,7 +127,12 @@ impl POS {
             if mined {
                 info!("mined one block, we are so lucky!");
                 {
-                    let _ = commit_block(self.controller_port, proposal.to_vec()).await;
+                    let _ = commit_block(
+                        self.controller_port,
+                        proposal.to_vec(),
+                        nonce.to_be_bytes().to_vec(),
+                    )
+                    .await;
                 }
                 let _ = broadcast_proposal(self.network_port, proposal, nonce).await;
             } else {
@@ -140,12 +160,13 @@ async fn check_proposal(
 async fn commit_block(
     controller_port: u16,
     proposal: Vec<u8>,
+    proof: Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let controller_address = format!("http://127.0.0.1:{}", controller_port);
     let mut controller_client =
         Consensus2ControllerServiceClient::connect(controller_address).await?;
 
-    let request = Request::new(Hash { hash: proposal });
+    let request = Request::new(ProposalWithProof { proposal, proof });
 
     let _response = controller_client.commit_block(request).await?;
 

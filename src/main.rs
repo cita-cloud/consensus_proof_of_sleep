@@ -91,7 +91,7 @@ async fn register_network_msg_handler(
     Ok(response.into_inner().is_success)
 }
 
-use cita_cloud_proto::common::SimpleResponse;
+use cita_cloud_proto::common::{ProposalWithProof, SimpleResponse};
 use cita_cloud_proto::consensus::{
     consensus_service_server::ConsensusService, consensus_service_server::ConsensusServiceServer,
     ConsensusConfiguration,
@@ -129,6 +129,23 @@ impl ConsensusService for PosServer {
         pos.reconfigure(config);
 
         let reply = SimpleResponse { is_success: true };
+        Ok(Response::new(reply))
+    }
+
+    async fn check_block(
+        &self,
+        request: Request<ProposalWithProof>,
+    ) -> Result<Response<SimpleResponse>, Status> {
+        info!("check_block request: {:?}", request);
+
+        let proposal_with_proof = request.into_inner();
+        let proposal = proposal_with_proof.proposal;
+        let proof = proposal_with_proof.proof;
+
+        let pos = self.pos.read().await;
+        let is_ok = pos.check_block(proposal, proof);
+
+        let reply = SimpleResponse { is_success: is_ok };
         Ok(Response::new(reply))
     }
 }
